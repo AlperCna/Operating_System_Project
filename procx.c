@@ -12,6 +12,7 @@
 #include <time.h>
 #include <errno.h>
 
+
 // --- Veri Yapıları (Data Structures) ---
 
 typedef enum { ATTACHED = 0, DETACHED = 1 } ProcessMode;
@@ -160,11 +161,70 @@ void show_menu() {
     printf("╚════════════════════════════════════╝\n");
 }
 
+// --- 4. GÜN: Fork ve Exec ile Program Çalıştırma ---
 void run_program() {
-    printf("\n>>> [1] Run selected.\n");
-    sleep(1);
-}
+    char command[256];
+    int mode;
+    
+    // 1. Önceki menü seçiminden kalan "Enter" tuşunu temizle (Buffer temizliği)
+    while(getchar() != '\n'); 
 
+    // 2. Kullanıcıdan Komut Al
+    printf("\nEnter the command to run (e.g., sleep 10): ");
+    // %[^\n] formatı, enter tuşuna basılana kadar boşluklar dahil her şeyi okur
+    if (scanf("%[^\n]", command) != 1) return;
+
+    // 3. Modu Al (0: Attached, 1: Detached)
+    printf("Choose running mode (0: Attached, 1: Detached): ");
+    scanf("%d", &mode);
+
+    // 4. FORK: Süreci kopyala
+    pid_t pid = fork();
+
+    if (pid < 0) {
+        perror("Fork failed"); // Fork başarısız olursa hata bas
+        return;
+    }
+
+    if (pid == 0) {
+        // =======================================
+        // BURASI ÇOCUK SÜREÇ (CHILD PROCESS)
+        // =======================================
+        
+        // Komutu parçala (Parse): "sleep 10" -> ["sleep", "10", NULL]
+        // execvp fonksiyonu komutları kelime kelime ayrılmış bir dizi olarak ister.
+        char *args[64];
+        int i = 0;
+        char *token = strtok(command, " ");
+        while (token != NULL) {
+            args[i++] = token;
+            token = strtok(NULL, " ");
+        }
+        args[i] = NULL; // Dizinin sonu mutlaka NULL ile bitmeli
+
+        // Detached Mod kontrolü (Yarın buraya setsid eklenecek)
+        if (mode == DETACHED) {
+            printf("[CHILD] Detached mode selected (setsid will be added in Day 5)\n");
+        }
+
+        // Komutu Çalıştır (Exec)
+        // Eğer execvp başarılı olursa, programın hafızası yeni komutla değişir
+        // ve bu satırdan sonrası ASLA çalışmaz.
+        execvp(args[0], args);
+
+        // Eğer kod buraya ulaşıyorsa execvp başarısız olmuş demektir (örn: yanlış komut)
+        perror("[ERROR] Exec failed");
+        exit(1); // Çocuğu hata koduyla öldür
+    } else {
+        // =======================================
+        // BURASI EBEVEYN SÜREÇ (PARENT PROCESS)
+        // =======================================
+        printf("[SUCCESS] Process started: PID %d\n", pid);
+        
+        // Kullanıcı sonucu görsün diye menüye dönmeden önce 1 saniye bekle
+        sleep(1);
+    }
+}
 void list_processes() {
     printf("\n>>> [2] List selected.\n");
     sleep(1);
