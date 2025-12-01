@@ -7,6 +7,7 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <semaphore.h>
+#include <signal.h>
 #include <pthread.h>
 #include <mqueue.h>
 #include <time.h>
@@ -300,8 +301,50 @@ void list_processes() {
     getchar(); // Yeni enter bekle
 }
 
+// --- 7. GÜN: Süreç Sonlandırma (Termination) ---
 void terminate_program() {
-    printf("\n>>> [3] Terminate selected.\n");
+    int target_pid;
+    int found = 0;
+
+    // 1. Kullanıcıdan PID İste
+    printf("\nEnter PID to terminate: ");
+    if (scanf("%d", &target_pid) != 1) {
+        while(getchar() != '\n'); // Hatalı girişi temizle
+        return;
+    }
+
+    // 2. Shared Memory Kilidini Al (Listeyi güncelleyeceğiz)
+    sem_wait(sem);
+
+    // 3. Listede bu PID var mı diye ara
+    for (int i = 0; i < 50; i++) {
+        if (shared_mem->processes[i].is_active && shared_mem->processes[i].pid == target_pid) {
+            
+            // A. Sinyal Gönder (SIGTERM: Kibarca sonlan demektir)
+            if (kill(target_pid, SIGTERM) == 0) {
+                printf("[SUCCESS] Signal SIGTERM sent to Process %d\n", target_pid);
+                
+                // B. Listeden Düşür
+                // Not: İleride Monitor Thread bunu otomatik yapacak ama
+                // anlık tepki görmek için burada manuel siliyoruz.
+                shared_mem->processes[i].is_active = 0;
+                shared_mem->processes[i].status = TERMINATED;
+                shared_mem->process_count--;
+                found = 1;
+            } else {
+                perror("[ERROR] Failed to kill process");
+            }
+            break; // İşlem tamam, döngüden çık
+        }
+    }
+
+    // 4. Kilidi Bırak
+    sem_post(sem);
+
+    if (!found) {
+        printf("[ERROR] Process PID %d not found in the list.\n", target_pid);
+    }
+    
     sleep(1);
 }
 
