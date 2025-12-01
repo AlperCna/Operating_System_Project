@@ -251,9 +251,53 @@ void run_program() {
         sleep(1);
     }
 }
+// --- 6. GÜN: Süreçleri Listeleme (Listing) ---
 void list_processes() {
-    printf("\n>>> [2] List selected.\n");
-    sleep(1);
+    // 1. Semafor Kilidi (Okuma yaparken veri değişmesin diye kilitliyoruz) [cite: 106]
+    sem_wait(sem);
+
+    // Tablo Başlıkları - PDF Sayfa 6'daki tasarıma uygun [cite: 108-109]
+    printf("\n╔═══════════════════════════════════════════════════════════════╗\n");
+    printf("║                       RUNNING PROGRAMS                        ║\n");
+    printf("╠══════════╦══════════════════════╦══════════╦═════════╦════════╣\n");
+    printf("║ %-8s ║ %-20s ║ %-8s ║ %-7s ║ %-6s ║\n", "PID", "Command", "Mode", "Owner", "Time");
+    printf("╠══════════╬══════════════════════╬══════════╬═════════╬════════╣\n");
+
+    int count = 0;
+    time_t now = time(NULL); // Geçen süreyi hesaplamak için şimdiki zamanı al
+
+    for (int i = 0; i < 50; i++) {
+        // Sadece aktif (is_active == 1) olan süreçleri listele [cite: 99]
+        if (shared_mem->processes[i].is_active) {
+            
+            // Geçen süreyi hesapla: (Şu an - Başlangıç zamanı) [cite: 105]
+            double elapsed = difftime(now, shared_mem->processes[i].start_time);
+            
+            // Mod ismini yazıya çevir (0 -> Attached, 1 -> Detached)
+            char *mode_str = (shared_mem->processes[i].mode == ATTACHED) ? "Attached" : "Detached";
+
+            // Satırı tablo formatında yazdır
+            printf("║ %-8d ║ %-20s ║ %-8s ║ %-7d ║ %-5.0fs ║\n",
+                   shared_mem->processes[i].pid,
+                   shared_mem->processes[i].command,
+                   mode_str,
+                   shared_mem->processes[i].owner_pid,
+                   elapsed);
+            
+            count++;
+        }
+    }
+
+    printf("╚══════════╩══════════════════════╩══════════╩═════════╩════════╝\n");
+    printf("Total: %d processes\n", count); // [cite: 110]
+
+    // 2. Kilidi Bırak (Bunu unutursak program donar!)
+    sem_post(sem);
+    
+    // Kullanıcının tabloyu incelemesi için bekle
+    printf("\nPress ENTER to return menu...");
+    while(getchar() != '\n'); // Önceki enter'ı temizle
+    getchar(); // Yeni enter bekle
 }
 
 void terminate_program() {
