@@ -161,38 +161,44 @@ void show_menu() {
     printf("╚════════════════════════════════════╝\n");
 }
 
-// --- 4. GÜN: Fork ve Exec ile Program Çalıştırma ---
+// --- 5. GÜN: Detached Mod ve Shared Memory Kaydı ---
 void run_program() {
     char command[256];
     int mode;
     
-    // 1. Önceki menü seçiminden kalan "Enter" tuşunu temizle (Buffer temizliği)
+    // 1. Buffer Temizliği (Önceki enter tuşunu yutmak için)
     while(getchar() != '\n'); 
 
     // 2. Kullanıcıdan Komut Al
     printf("\nEnter the command to run (e.g., sleep 10): ");
-    // %[^\n] formatı, enter tuşuna basılana kadar boşluklar dahil her şeyi okur
     if (scanf("%[^\n]", command) != 1) return;
 
-    // 3. Modu Al (0: Attached, 1: Detached)
+    // 3. Modu Al
     printf("Choose running mode (0: Attached, 1: Detached): ");
     scanf("%d", &mode);
 
-    // 4. FORK: Süreci kopyala
+    // 4. FORK İşlemi
     pid_t pid = fork();
 
     if (pid < 0) {
-        perror("Fork failed"); // Fork başarısız olursa hata bas
+        perror("Fork failed");
         return;
     }
 
     if (pid == 0) {
-        // =======================================
-        // BURASI ÇOCUK SÜREÇ (CHILD PROCESS)
-        // =======================================
-        
-        // Komutu parçala (Parse): "sleep 10" -> ["sleep", "10", NULL]
-        // execvp fonksiyonu komutları kelime kelime ayrılmış bir dizi olarak ister.
+        // --- CHILD PROCESS ---
+
+        // 5. GÜN YENİLİĞİ: Detached Mod için Setsid [cite: 289]
+        if (mode == DETACHED) {
+            // setsid(): Yeni bir oturum açar ve terminalden bağımsız hale getirir.
+            // Terminal kapansa bile bu süreç yaşamaya devam eder.
+            if (setsid() < 0) {
+                perror("setsid failed");
+                exit(1);
+            }
+        }
+
+        // Komutu Parçala
         char *args[64];
         int i = 0;
         char *token = strtok(command, " ");
@@ -200,28 +206,48 @@ void run_program() {
             args[i++] = token;
             token = strtok(NULL, " ");
         }
-        args[i] = NULL; // Dizinin sonu mutlaka NULL ile bitmeli
+        args[i] = NULL;
 
-        // Detached Mod kontrolü (Yarın buraya setsid eklenecek)
-        if (mode == DETACHED) {
-            printf("[CHILD] Detached mode selected (setsid will be added in Day 5)\n");
-        }
-
-        // Komutu Çalıştır (Exec)
-        // Eğer execvp başarılı olursa, programın hafızası yeni komutla değişir
-        // ve bu satırdan sonrası ASLA çalışmaz.
+        // Çalıştır
         execvp(args[0], args);
-
-        // Eğer kod buraya ulaşıyorsa execvp başarısız olmuş demektir (örn: yanlış komut)
         perror("[ERROR] Exec failed");
-        exit(1); // Çocuğu hata koduyla öldür
+        exit(1);
     } else {
-        // =======================================
-        // BURASI EBEVEYN SÜREÇ (PARENT PROCESS)
-        // =======================================
-        printf("[SUCCESS] Process started: PID %d\n", pid);
+        // --- PARENT PROCESS ---
         
-        // Kullanıcı sonucu görsün diye menüye dönmeden önce 1 saniye bekle
+        // 5. GÜN YENİLİĞİ: Shared Memory'e Kayıt [cite: 300]
+        
+        // A. Semafor ile Kilit Al (Race Condition olmasın) [cite: 306]
+        sem_wait(sem);
+
+        // B. Boş bir yer bul
+        int i;
+        for (i = 0; i < 50; i++) {
+            // is_active == 0 olan ilk boş slotu buluyoruz
+            if (shared_mem->processes[i].is_active == 0) {
+                // C. Bilgileri Yaz
+                shared_mem->processes[i].pid = pid;
+                shared_mem->processes[i].owner_pid = getpid(); // Parent'ın PID'si
+                strcpy(shared_mem->processes[i].command, command);
+                shared_mem->processes[i].mode = mode;
+                shared_mem->processes[i].status = RUNNING;
+                shared_mem->processes[i].start_time = time(NULL); // Şu anki zaman
+                shared_mem->processes[i].is_active = 1; // Artık dolu
+                
+                shared_mem->process_count++;
+                break; // Kayıt bitti, döngüden çık
+            }
+        }
+        
+        // D. Kilidi Bırak
+        sem_post(sem);
+
+        if (i < 50) {
+            printf("[SUCCESS] Process started: PID %d (Saved to SHM)\n", pid);
+        } else {
+            printf("[ERROR] Process list is full! PID %d running but not tracked.\n", pid);
+        }
+        
         sleep(1);
     }
 }
