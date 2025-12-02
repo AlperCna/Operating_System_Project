@@ -19,6 +19,10 @@
 typedef enum { ATTACHED = 0, DETACHED = 1 } ProcessMode;
 typedef enum { RUNNING = 0, TERMINATED = 1 } ProcessStatus;
 
+// 9. ve 10. GÜN: Mesaj Komutları
+#define CMD_START 1
+#define CMD_TERMINATE 2
+
 typedef struct {
     pid_t pid;
     pid_t owner_pid;
@@ -61,6 +65,7 @@ void list_processes();
 void terminate_program();
 void exit_program();
 void *monitor_thread(void *arg);
+void *ipc_listener_thread(void *arg);
 
 // --- Ana Fonksiyon ---
 int main() {
@@ -69,10 +74,16 @@ int main() {
     // 1. ADIM: IPC Mekanizmalarını Başlat (Günün Yıldızı Burası)
     init_ipc();
 
-// 3. ADIM: Monitor Thread Başlat (8. Gün)
+//  Monitor Thread Başlat (8. Gün)
     pthread_t tid_monitor;
     pthread_create(&tid_monitor, NULL, monitor_thread, NULL);
     pthread_detach(tid_monitor); // Thread'i serbest bırak, main kapanınca o da kapansın
+
+
+ // 3. IPC Listener Thread Başlat (Mesaj Dinleyici - 10. Gün)
+    pthread_t tid_listener;
+    pthread_create(&tid_listener, NULL, ipc_listener_thread, NULL);
+    pthread_detach(tid_listener);   
 
     // 2. ADIM: Menü Döngüsü
     while (1) {
@@ -168,12 +179,12 @@ void show_menu() {
     printf("╚════════════════════════════════════╝\n");
 }
 
-// --- 5. GÜN: Detached Mod ve Shared Memory Kaydı ---
+// --- 5. GÜN: Detached Mod ve Shared Memory Kaydı (GÜNCELLENMİŞ HALİ) ---
 void run_program() {
     char command[256];
     int mode;
     
-    // 1. Buffer Temizliği (Önceki enter tuşunu yutmak için)
+    // 1. Buffer Temizliği
     while(getchar() != '\n'); 
 
     // 2. Kullanıcıdan Komut Al
@@ -194,18 +205,13 @@ void run_program() {
 
     if (pid == 0) {
         // --- CHILD PROCESS ---
-
-        // 5. GÜN YENİLİĞİ: Detached Mod için Setsid [cite: 289]
         if (mode == DETACHED) {
-            // setsid(): Yeni bir oturum açar ve terminalden bağımsız hale getirir.
-            // Terminal kapansa bile bu süreç yaşamaya devam eder.
             if (setsid() < 0) {
                 perror("setsid failed");
                 exit(1);
             }
         }
 
-        // Komutu Parçala
         char *args[64];
         int i = 0;
         char *token = strtok(command, " ");
@@ -215,42 +221,44 @@ void run_program() {
         }
         args[i] = NULL;
 
-        // Çalıştır
         execvp(args[0], args);
         perror("[ERROR] Exec failed");
         exit(1);
     } else {
         // --- PARENT PROCESS ---
         
-        // 5. GÜN YENİLİĞİ: Shared Memory'e Kayıt [cite: 300]
-        
-        // A. Semafor ile Kilit Al (Race Condition olmasın) [cite: 306]
         sem_wait(sem);
 
-        // B. Boş bir yer bul
         int i;
         for (i = 0; i < 50; i++) {
-            // is_active == 0 olan ilk boş slotu buluyoruz
             if (shared_mem->processes[i].is_active == 0) {
-                // C. Bilgileri Yaz
                 shared_mem->processes[i].pid = pid;
-                shared_mem->processes[i].owner_pid = getpid(); // Parent'ın PID'si
+                shared_mem->processes[i].owner_pid = getpid(); 
                 strcpy(shared_mem->processes[i].command, command);
                 shared_mem->processes[i].mode = mode;
                 shared_mem->processes[i].status = RUNNING;
-                shared_mem->processes[i].start_time = time(NULL); // Şu anki zaman
-                shared_mem->processes[i].is_active = 1; // Artık dolu
+                shared_mem->processes[i].start_time = time(NULL); 
+                shared_mem->processes[i].is_active = 1; 
                 
                 shared_mem->process_count++;
-                break; // Kayıt bitti, döngüden çık
+                break; 
             }
         }
         
-        // D. Kilidi Bırak
         sem_post(sem);
 
         if (i < 50) {
             printf("[SUCCESS] Process started: PID %d (Saved to SHM)\n", pid);
+
+            // --- BURASI EKLENDİ (10. GÜN) ---
+            Message msg;
+            msg.msg_type = 1;
+            msg.command = CMD_START;
+            msg.sender_pid = getpid();
+            msg.target_pid = pid;
+            mq_send(msg_queue, (char*)&msg, sizeof(Message), 0);
+            // -------------------------------
+
         } else {
             printf("[ERROR] Process list is full! PID %d running but not tracked.\n", pid);
         }
@@ -307,44 +315,46 @@ void list_processes() {
     getchar(); // Yeni enter bekle
 }
 
-// --- 7. GÜN: Süreç Sonlandırma (Termination) ---
+// --- 7. GÜN: Süreç Sonlandırma (GÜNCELLENMİŞ HALİ) ---
 void terminate_program() {
     int target_pid;
     int found = 0;
 
-    // 1. Kullanıcıdan PID İste
     printf("\nEnter PID to terminate: ");
     if (scanf("%d", &target_pid) != 1) {
-        while(getchar() != '\n'); // Hatalı girişi temizle
+        while(getchar() != '\n'); 
         return;
     }
 
-    // 2. Shared Memory Kilidini Al (Listeyi güncelleyeceğiz)
     sem_wait(sem);
 
-    // 3. Listede bu PID var mı diye ara
     for (int i = 0; i < 50; i++) {
         if (shared_mem->processes[i].is_active && shared_mem->processes[i].pid == target_pid) {
             
-            // A. Sinyal Gönder (SIGTERM: Kibarca sonlan demektir)
             if (kill(target_pid, SIGTERM) == 0) {
                 printf("[SUCCESS] Signal SIGTERM sent to Process %d\n", target_pid);
                 
-                // B. Listeden Düşür
-                // Not: İleride Monitor Thread bunu otomatik yapacak ama
-                // anlık tepki görmek için burada manuel siliyoruz.
                 shared_mem->processes[i].is_active = 0;
                 shared_mem->processes[i].status = TERMINATED;
                 shared_mem->process_count--;
                 found = 1;
+
+                // --- BURASI EKLENDİ (10. GÜN) ---
+                Message msg;
+                msg.msg_type = 1;
+                msg.command = CMD_TERMINATE;
+                msg.sender_pid = getpid();
+                msg.target_pid = target_pid;
+                mq_send(msg_queue, (char*)&msg, sizeof(Message), 0);
+                // -------------------------------
+
             } else {
                 perror("[ERROR] Failed to kill process");
             }
-            break; // İşlem tamam, döngüden çık
+            break; 
         }
     }
 
-    // 4. Kilidi Bırak
     sem_post(sem);
 
     if (!found) {
@@ -354,42 +364,70 @@ void terminate_program() {
     sleep(1);
 }
 
-// --- 8. GÜN: Monitor Thread (Zombi Temizleyici) ---
+// --- 8. GÜN: Monitor Thread (GÜNCELLENMİŞ HALİ) ---
 void *monitor_thread(void *arg) {
     int status;
     
     while (1) {
-        sleep(2); // Her 2 saniyede bir kontrol et [cite: 721]
+        sleep(2); 
 
-        // Listeyi kontrol etmek için kilit alıyoruz
         sem_wait(sem); 
         
         for (int i = 0; i < 50; i++) {
-            // Sadece aktif ve BİZİM başlattığımız (owner_pid == getpid) süreçlere bakıyoruz
             if (shared_mem->processes[i].is_active && 
                 shared_mem->processes[i].owner_pid == getpid()) {
                 
-                // waitpid ile durumu soruyoruz.
-                // WNOHANG: "İşlem bitmediyse bekleme yapma, hemen devam et" demektir.
-                // Eğer dönüş değeri (res) > 0 ise süreç bitmiş demektir.
-                pid_t res = waitpid(shared_mem->processes[i].pid, &status, WNOHANG); // [cite: 722]
+                pid_t res = waitpid(shared_mem->processes[i].pid, &status, WNOHANG);
                 
                 if (res > 0) {
-                    // Süreç bitmiş! Listeden silelim.
-                    printf("\n[MONITOR] Process %d was terminated\n", res); // [cite: 725]
                     
                     shared_mem->processes[i].is_active = 0;
                     shared_mem->processes[i].status = TERMINATED;
                     shared_mem->process_count--;
                     
-                    // Kullanıcı menüde beklerken araya yazı girdiği için tekrar input satırını hatırlatabiliriz
-                    // printf("Your choice: "); 
-                    // fflush(stdout);
+                    // --- BURASI EKLENDİ (10. GÜN) ---
+                    Message msg;
+                    msg.msg_type = 1;
+                    msg.command = CMD_TERMINATE;
+                    msg.sender_pid = getpid();
+                    msg.target_pid = res;
+                    mq_send(msg_queue, (char*)&msg, sizeof(Message), 0);
+                    // -------------------------------
+
+                    printf("\n[MONITOR] Process %d was terminated\n", res);
                 }
             }
         }
         
-        sem_post(sem); // Kilidi bırak
+        sem_post(sem); 
+    }
+    return NULL;
+}
+
+// --- 9. ve 10. GÜN: IPC Listener Thread (Mesaj Dinleyici) [cite: 726-734] ---
+void *ipc_listener_thread(void *arg) {
+    Message msg;
+    while (1) {
+        // Mesaj bekle (bloke olur, mesaj gelince uyanır)
+        // Eğer hata olursa (örn: kuyruk kapatıldıysa) döngüden çık
+        if (mq_receive(msg_queue, (char*)&msg, sizeof(Message), NULL) > 0) {
+            
+            // Kendi gönderdiğimiz mesajları ekrana basma (Sadece başkalarını gör)
+            if (msg.sender_pid != getpid()) {
+                if (msg.command == CMD_START) {
+                    printf("\n\n[IPC] New process started: PID %d\n", msg.target_pid);
+                } else if (msg.command == CMD_TERMINATE) {
+                    printf("\n\n[IPC] Process terminated: PID %d\n", msg.target_pid);
+                }
+                
+                // Menü satırını tekrar göster ki ekran karışmasın
+                printf("Your choice: ");
+                fflush(stdout);
+            }
+        } else {
+            // Hata veya kapanış durumu
+            break; 
+        }
     }
     return NULL;
 }
