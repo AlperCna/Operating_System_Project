@@ -60,6 +60,7 @@ void run_program();
 void list_processes();
 void terminate_program();
 void exit_program();
+void *monitor_thread(void *arg);
 
 // --- Ana Fonksiyon ---
 int main() {
@@ -67,6 +68,11 @@ int main() {
 
     // 1. ADIM: IPC Mekanizmalarını Başlat (Günün Yıldızı Burası)
     init_ipc();
+
+// 3. ADIM: Monitor Thread Başlat (8. Gün)
+    pthread_t tid_monitor;
+    pthread_create(&tid_monitor, NULL, monitor_thread, NULL);
+    pthread_detach(tid_monitor); // Thread'i serbest bırak, main kapanınca o da kapansın
 
     // 2. ADIM: Menü Döngüsü
     while (1) {
@@ -291,7 +297,7 @@ void list_processes() {
 
     printf("╚══════════╩══════════════════════╩══════════╩═════════╩════════╝\n");
     printf("Total: %d processes\n", count); // [cite: 110]
-
+ 
     // 2. Kilidi Bırak (Bunu unutursak program donar!)
     sem_post(sem);
     
@@ -346,6 +352,46 @@ void terminate_program() {
     }
     
     sleep(1);
+}
+
+// --- 8. GÜN: Monitor Thread (Zombi Temizleyici) ---
+void *monitor_thread(void *arg) {
+    int status;
+    
+    while (1) {
+        sleep(2); // Her 2 saniyede bir kontrol et [cite: 721]
+
+        // Listeyi kontrol etmek için kilit alıyoruz
+        sem_wait(sem); 
+        
+        for (int i = 0; i < 50; i++) {
+            // Sadece aktif ve BİZİM başlattığımız (owner_pid == getpid) süreçlere bakıyoruz
+            if (shared_mem->processes[i].is_active && 
+                shared_mem->processes[i].owner_pid == getpid()) {
+                
+                // waitpid ile durumu soruyoruz.
+                // WNOHANG: "İşlem bitmediyse bekleme yapma, hemen devam et" demektir.
+                // Eğer dönüş değeri (res) > 0 ise süreç bitmiş demektir.
+                pid_t res = waitpid(shared_mem->processes[i].pid, &status, WNOHANG); // [cite: 722]
+                
+                if (res > 0) {
+                    // Süreç bitmiş! Listeden silelim.
+                    printf("\n[MONITOR] Process %d was terminated\n", res); // [cite: 725]
+                    
+                    shared_mem->processes[i].is_active = 0;
+                    shared_mem->processes[i].status = TERMINATED;
+                    shared_mem->process_count--;
+                    
+                    // Kullanıcı menüde beklerken araya yazı girdiği için tekrar input satırını hatırlatabiliriz
+                    // printf("Your choice: "); 
+                    // fflush(stdout);
+                }
+            }
+        }
+        
+        sem_post(sem); // Kilidi bırak
+    }
+    return NULL;
 }
 
 void exit_program() {
